@@ -8,7 +8,8 @@ const root = resolve(process.cwd(), process.cwd().endsWith('/dashboard') ? '..' 
 
 export type Issue = { number: number; title: string; url: string; assignees: string[]; state: string };
 export type Job = { issueNumber: number; state: string; runId: string; summary: string | null; updatedAt: string; childPid: number | null };
-export type Project = { name: string; state: string; enabled: boolean; paused: boolean; lastReconciledAt: string | null; error: string | null; managerConfigured: boolean; issues: Issue[]; jobs: Job[] };
+export type Goal = { objective: string; priorityIssues: number[]; revision: number; updatedAt: string | null };
+export type Project = { goal: Goal; name: string; state: string; enabled: boolean; paused: boolean; lastReconciledAt: string | null; error: string | null; managerConfigured: boolean; issues: Issue[]; jobs: Job[] };
 export type Worker = { id: string; name: string; status: string; updatedAt: string | null; project: string };
 export type Event = { time: string; title: string; detail: string; url: string | null };
 export type Snapshot = {
@@ -55,7 +56,7 @@ export async function getSnapshot(): Promise<Snapshot> {
       const value = await harness('status', '--repo', item.project);
       const issues: Issue[] = (Array.isArray(value.issues) ? value.issues : []).slice(0, 1000).map((issue: any) => ({ number: issue.number, title: text(issue.title), url: text(issue.url), assignees: Array.isArray(issue.assignees) ? issue.assignees : [], state: text(issue.state) }));
       const jobs: Job[] = (Array.isArray(value.jobs) ? value.jobs : []).slice(0, 1000).map((job: any) => ({ issueNumber: job.issue_number, state: text(job.state), runId: text(job.run_id), summary: typeof job.summary === 'string' ? job.summary : null, updatedAt: text(job.updated_at), childPid: typeof job.child_pid === 'number' ? job.child_pid : null }));
-      const project: Project = { name: text(value.project), state: text(value.state), enabled: !!value.enabled, paused: !!value.paused, lastReconciledAt: value.last_reconciled_at ?? null, error: value.last_error ?? value.slack_last_error ?? null, managerConfigured: !!value.manager_configured, issues, jobs };
+      const project: Project = { goal: value.goal, name: text(value.project), state: text(value.state), enabled: !!value.enabled, paused: !!value.paused, lastReconciledAt: value.last_reconciled_at ?? null, error: value.last_error ?? value.slack_last_error ?? null, managerConfigured: !!value.manager_configured, issues, jobs };
       snapshot.projects.push(project);
       if (project.lastReconciledAt) snapshot.events.push({ time: project.lastReconciledAt, title: 'Issues reconciled', detail: `${project.name}: ${issues.length} assigned open candidates`, url: null });
       for (const job of jobs) if (job.updatedAt) snapshot.events.push({ time: job.updatedAt, title: `Issue #${job.issueNumber}: ${job.state}`, detail: `${project.name}${job.summary ? ` · ${job.summary}` : ''}`, url: issues.find(issue => issue.number === job.issueNumber)?.url ?? null });

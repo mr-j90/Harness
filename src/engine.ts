@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { basename, join } from "node:path";
 
 type Issue = { number: number; title: string; url: string; assignees: { login: string }[]; state: string };
-type ProjectRow = { root: string; project: string; enabled: number; allowlist: string; paused: number; last_reconciled_at: string | null; last_error: string | null };
+type ProjectRow = { root: string; project: string; enabled: number; allowlist: string; paused: number; last_reconciled_at: string | null; last_error: string | null; goal_objective: string; goal_priority_issues: string; goal_revision: number; goal_updated_at: string | null };
 
 /** Durable local state and read-only GitHub reconciliation. This engine never dispatches workers. */
 export class Engine {
@@ -22,6 +22,10 @@ export class Engine {
         project TEXT NOT NULL, number INTEGER NOT NULL, title TEXT NOT NULL, url TEXT NOT NULL,
         assignees TEXT NOT NULL, PRIMARY KEY (project, number)
       );`);
+    const columns = this.db.query("PRAGMA table_info(projects)").all() as {name: string}[];
+    for (const [name, definition] of [["goal_objective", "TEXT NOT NULL DEFAULT ''"], ["goal_priority_issues", "TEXT NOT NULL DEFAULT '[]'"], ["goal_revision", "INTEGER NOT NULL DEFAULT 0"], ["goal_updated_at", "TEXT"]]) {
+      if (!columns.some(column => column.name === name)) this.db.exec(`ALTER TABLE projects ADD COLUMN ${name} ${definition}`);
+    }
   }
 
   attach(root: string): any {
@@ -70,8 +74,21 @@ export class Engine {
       .map(issue => ({ ...issue, assignees: JSON.parse(issue.assignees), state: "candidate: eligibility unverified" }));
     const allowlist = JSON.parse(row.allowlist) as string[];
     const state = row.paused ? "paused" : !row.enabled ? "disabled" : !allowlist.length ? "blocked: empty assignee allowlist" : row.last_error ? "reconciliation error" : !row.last_reconciled_at ? "awaiting reconciliation" : issues.length ? "candidates require review" : "no assigned open issues found";
-    return { project: row.project, root: row.root, enabled: !!row.enabled, paused: !!row.paused, allowlist, state, issues, last_reconciled_at: row.last_reconciled_at, last_error: row.last_error,
+    return { goal: { objective: row.goal_objective, priorityIssues: JSON.parse(row.goal_priority_issues), revision: row.goal_revision, updatedAt: row.goal_updated_at }, project: row.project, root: row.root, enabled: !!row.enabled, paused: !!row.paused, allowlist, state, issues, last_reconciled_at: row.last_reconciled_at, last_error: row.last_error,
       evidence_limits: "GitHub issue assignment and open state only, limited to 1000 results per assignee; dependencies and actionability are not checked. This engine does not validate worker outcomes, checks, or notifications." };
+  }
+
+  setGoal(project: string, objective: string, priorityIssues: number[], expectedRevision?: number): any {
+    if (typeof objective !== "string") throw new Error("Objective must be a string");
+    if (!Array.isArray(priorityIssues) || !priorityIssues.every(n => Number.isSafeInteger(n) && n > 0) || new Set(priorityIssues).size !== priorityIssues.length) throw new Error("Priority issues must be unique positive issue numbers");
+    if (expectedRevision !== undefined && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)) throw new Error("Expected revision must be a non-negative integer");
+    const row = this.row(project);
+    this.db.transaction(() => {
+      const current = this.row(row.root);
+      if (expectedRevision !== undefined && current.goal_revision !== expectedRevision) throw new Error("Goal revision conflict");
+      this.db.query("UPDATE projects SET goal_objective = ?, goal_priority_issues = ?, goal_revision = goal_revision + 1, goal_updated_at = ? WHERE root = ?").run(objective.trim(), JSON.stringify(priorityIssues), new Date().toISOString(), row.root);
+    }).immediate();
+    return this.status(row.root);
   }
 
   pause(project: string): any {

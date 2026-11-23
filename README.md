@@ -34,6 +34,8 @@ bun src/cli.ts wake --repo example-org/billing
 bun src/cli.ts status --repo example-org/billing
 bun src/cli.ts goal pause --repo example-org/billing
 bun src/cli.ts goal resume --repo example-org/billing
+bun src/cli.ts goal show --repo example-org/billing
+bun src/cli.ts goal set --repo example-org/billing --objective 'Ship the billing milestone' --priority 123,456 --expected-revision 0
 bun src/cli.ts service status
 bun src/cli.ts service stop
 bun src/cli.ts service shutdown
@@ -43,13 +45,17 @@ bun src/cli.ts service shutdown
 
 Discovery requires an enabled goal and nonempty assignee allowlist, and returns at most 1,000 open issues per assignee. These are candidates: dependencies and actionability are not verified. The service reconciles enabled projects at startup and every 300 seconds by default; set `HARNESS_RECONCILE=0` before starting to disable periodic polling, or set `HARNESS_RECONCILE_SECONDS` to change its interval. Wake and resume explicitly reconcile. Pause persists across restarts and prevents new manager handoffs; wake can still refresh candidates. Check status for discovery errors.
 
+`goal show` displays the saved objective, priority issue numbers, and revision; add `--json` for machine-readable output. `goal set` replaces both the objective and the complete priority order: include every priority issue in the desired order, or use `--priority none` to clear it. Use `--expected-revision` from `goal show` to reject an update if someone else changed the goal; omit it to replace the current goal unconditionally. The objective is context for the manager, not an issue search or queue selector. Priority numbers order eligible discovered candidates; they do not make issues eligible or interrupt active work. Other candidates follow in issue-number order. An enabled, unpaused project is reconciled after a saved change.
+
+A goal change does not release existing blocked claims, including claims made under an earlier goal. Once the blocker has cleared, use `goal retry --repo <name> --issue <number>` to release that claim for consideration under the current goal.
+
 State and socket default to `~/.local/state/portable-harness`; set `HARNESS_STATE_DIR` consistently for service and CLI to use another directory. Shared settings are read from `~/.config/portable-harness/config.toml` when present; set `HARNESS_CONFIG` to select another file. Environment variables override shared state and polling settings. `shared/config.toml` is an example, not automatically installed.
 
 ## Optional manager
 
 Manager execution is off by default. Set `HARNESS_MANAGER=t3` in the environment of the service **before starting it** to use the bundled adapter. This is a local process setting; it does not activate T3 globally or enable other services. An absolute `HARNESS_MANAGER_BIN` takes precedence and selects an operator-provided executable instead. A relative `HARNESS_MANAGER_BIN` is rejected. Restart the service after changing its environment; attaching or starting an enabled project can trigger a handoff immediately.
 
-The service sends one JSON object on standard input containing `run_id`, `project`, `root`, `issue`, `contexts`, `context_command`, and instructions. A custom executable must exit successfully and return exactly one JSON object on standard output with `outcome` (`complete` or `blocked`) and a nonempty `summary`. The manager must validate actionability and policy and arrange delegated execution and independent review using `gpt-6.1-terra`; the harness asks for that model but does not enforce the model used by T3 or verify reported results. The checkout must have a Git `origin` matching the configured GitHub repository before handoff. Detached service output is discarded; inspect status for recorded errors.
+The service sends one JSON object on standard input containing `run_id`, `project`, `root`, `issue`, the goal snapshot, `contexts`, `context_command`, and instructions. A custom executable must exit successfully and return exactly one JSON object on standard output with `outcome` (`complete`, `blocked`, or `out_of_scope`) and a nonempty `summary`. A custom manager may opt in to `out_of_scope` only for a valid issue outside a nonempty objective; use `blocked` for actual blockers. The manager must validate actionability and policy and arrange delegated execution and independent review using `gpt-6.1-terra`; the harness asks for that model but does not enforce the model used by T3 or verify reported results. The checkout must have a Git `origin` matching the configured GitHub repository before handoff. Detached service output is discarded; inspect status for recorded errors.
 
 ### T3 adapter
 
@@ -84,7 +90,7 @@ A preflight failure before sending, including missing settings or a busy or mism
     If it is already attached, starting the service itself can dispatch after reconciliation. Use `bun src/cli.ts status --repo eliza-hq/finance_mesh` to inspect claims.
 4. To stop new work, run `bun src/cli.ts goal pause --repo eliza-hq/finance_mesh`. Pause does not interrupt an active run. Run `bun src/cli.ts service shutdown` to stop scheduling immediately and exit after active runs finish. Alternatively, `service stop` refuses while a run is active.
 
-Claims persist per issue, with at most one running handoff per project. After a terminal outcome the service performs a fresh GitHub reconciliation and considers the next unclaimed candidate in issue-number order, subject to the enabled goal, allowlist and URL checks; the manager must still assess dependencies and actionability. A `blocked` claim can be released with `bun src/cli.ts goal retry --repo example-org/billing --issue 123`. A `needs attention` claim blocks all further handoffs until an operator inspects it and records an outcome for the exact run, for example `bun src/cli.ts goal resolve --repo example-org/billing --issue 123 --run RUN_ID --outcome blocked --summary "Inspection result"`. Status shows claims and run IDs. `service shutdown` acknowledges immediately and drains active handoffs; service status reports draining until exit. `service stop` refuses while a manager is active; SIGTERM also waits for active handoffs. Forced interruption can leave an uncertain claim.
+Claims persist per issue, with at most one running handoff per project. An `out_of_scope` claim excludes that issue for the dispatched goal revision and is reconsidered when the goal revision changes; completed, blocked, and uncertain claims remain unchanged. When every eligible candidate is out of scope for the current revision, no further handoffs occur until a goal update or other eligible candidate arrives. After a terminal outcome the service performs a fresh GitHub reconciliation and considers the next unclaimed candidate in issue-number order, subject to the enabled goal, allowlist and URL checks; the manager must still assess dependencies and actionability. A `blocked` claim can be released with `bun src/cli.ts goal retry --repo example-org/billing --issue 123`. A `needs attention` claim blocks all further handoffs until an operator inspects it and records an outcome for the exact run, for example `bun src/cli.ts goal resolve --repo example-org/billing --issue 123 --run RUN_ID --outcome blocked --summary "Inspection result"`. Status shows claims and run IDs. `service shutdown` acknowledges immediately and drains active handoffs; service status reports draining until exit. `service stop` refuses while a manager is active; SIGTERM also waits for active handoffs. Forced interruption can leave an uncertain claim.
 
 Run `bash scripts/smoke-t3.sh` from this directory for the local fake-T3 and fake-GitHub smoke test; it does not dispatch live work.
 
@@ -96,7 +102,7 @@ The service posts job outcomes and idle or blocked transitions with persisted de
 
 ## Local dashboard
 
-The dashboard is a separate, read-only local Next.js application. It does not start or control the harness service. Install its dependencies and run it from the repository root:
+The dashboard is a separate local Next.js application. Its Project goals tab displays and edits each attached project’s objective and priority issue order; the Overview, Agent work, Harness claims, and Issue queue tabs display observations. Saving a goal uses the local harness service, but the dashboard does not start or stop it. Install its dependencies and run it from the repository root:
 
 ```sh
 npm --prefix dashboard ci

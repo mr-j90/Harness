@@ -10,7 +10,7 @@ import { loadConfig } from './config';
 const config = loadConfig();
 export const stateDir = config.stateDir;
 export const socketPath = join(stateDir, 'service.sock');
-export type Request = { command: string; project?: string; root?: string; issue?: number; run?: string; outcome?: string; summary?: string };
+export type Request = { command: string; project?: string; root?: string; issue?: number; run?: string; outcome?: string; summary?: string; objective?: string; priorityIssues?: number[]; expectedRevision?: number };
 
 export async function request(req: Request, timeout = 3000): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -110,11 +110,18 @@ export async function runService() {
       }
       if (req.command === 'ping') { respond({ running: true, pid: process.pid, stateDir, draining: stopping, active: manager.activeCount() }); return; }
       serialized(async () => {
-        if (stopping && !['projects', 'status', 'context'].includes(req.command)) throw new Error('Service is draining');
+        if (stopping && !['projects', 'status', 'context', 'goal-show'].includes(req.command)) throw new Error('Service is draining');
         switch (req.command) {
           case 'projects': return engine.projects();
           case 'attach': if (!req.root) throw new Error('Repository path is required'); { const attached = engine.attach(req.root); if (attached.enabled) schedule(attached.project); return status(attached.project); }
           case 'status': if (!req.project) throw new Error('Repository is required'); return status(req.project);
+          case 'goal-show': if (!req.project) throw new Error('Repository is required'); return engine.status(req.project).goal;
+          case 'goal-set': {
+            if (!req.project || typeof req.objective !== 'string' || !Array.isArray(req.priorityIssues)) throw new Error('Repository, objective and priority issues are required');
+            const updated = engine.setGoal(req.project, req.objective, req.priorityIssues, req.expectedRevision);
+            if (!stopping && updated.enabled && !updated.paused) schedule(updated.project);
+            return updated.goal;
+          }
           case 'context': if (!req.project) throw new Error('Repository is required'); return slack.context(engine.status(req.project).project);
           case 'pause': if (!req.project) throw new Error('Repository is required'); engine.pause(req.project); return status(req.project);
           case 'resume': if (!req.project) throw new Error('Repository is required'); engine.resume(req.project); return await reconcile(req.project);

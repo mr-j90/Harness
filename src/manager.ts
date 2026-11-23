@@ -41,6 +41,7 @@ export class ManagerLoop {
       CREATE UNIQUE INDEX IF NOT EXISTS one_running_per_project ON claims(project) WHERE state = 'running';`);
     const columns = this.db.query("PRAGMA table_info(claims)").all() as {name: string}[];
     if (!columns.some(column => column.name === "child_pid")) this.db.exec("ALTER TABLE claims ADD COLUMN child_pid INTEGER");
+    if (!columns.some(column => column.name === "goal_revision")) this.db.exec("ALTER TABLE claims ADD COLUMN goal_revision INTEGER");
     // A dead owner cannot establish whether the external manager finished its work.
     for (const claim of this.db.query("SELECT * FROM claims WHERE state = 'running'").all() as Claim[]) {
       let alive = true;
@@ -53,7 +54,7 @@ export class ManagerLoop {
   activeCount(): number { return this.active.size; }
 
   summary(project: string): any {
-    return this.db.query("SELECT project, issue_number, state, run_id, summary, updated_at, child_pid FROM claims WHERE project = ? ORDER BY issue_number").all(project);
+    return this.db.query("SELECT project, issue_number, state, run_id, summary, updated_at, child_pid, goal_revision FROM claims WHERE project = ? ORDER BY issue_number").all(project);
   }
 
   /** Explicitly release a blocked claim. Ambiguous runs require manual inspection, not retry. */
@@ -87,22 +88,26 @@ export class ManagerLoop {
         // Uncertain runs block all further handoffs until an operator investigates.
         const unresolved = this.db.query("SELECT 1 FROM claims WHERE project = ? AND state IN ('running', 'needs attention') LIMIT 1").get(project);
         if (unresolved) return null;
-        for (const candidate of status.issues) {
+        const priorities = Array.isArray(status.goal?.priorityIssues) ? status.goal.priorityIssues : [];
+        const rank = new Map<number, number>(priorities.map((number: number, index: number) => [number, index]));
+        const candidates = [...status.issues].sort((a, b) => (rank.get(a.number) ?? Infinity) - (rank.get(b.number) ?? Infinity));
+        for (const candidate of candidates) {
           if (!Number.isInteger(candidate.number) || candidate.number <= 0 || typeof candidate.url !== "string" || !Array.isArray(candidate.assignees)) continue;
           if (!candidate.assignees.some((login: unknown) => typeof login === "string" && status.allowlist.some((allowed: string) => allowed.toLowerCase() === login.toLowerCase()))) continue;
           if (candidate.url.toLowerCase() !== `https://github.com/${project}/issues/${candidate.number}`.toLowerCase()) continue;
-          const prior = this.db.query("SELECT state FROM claims WHERE project = ? AND issue_number = ?").get(project, candidate.number) as {state: string} | null;
-          if (prior && prior.state !== "deferred") continue;
-          if (prior) this.db.query("DELETE FROM claims WHERE project = ? AND issue_number = ? AND state = 'deferred'").run(project, candidate.number);
+          const prior = this.db.query("SELECT state, goal_revision FROM claims WHERE project = ? AND issue_number = ?").get(project, candidate.number) as {state: string; goal_revision: number | null} | null;
+          const revision = Number.isSafeInteger(status.goal?.revision) ? status.goal.revision : 0;
+          if (prior && prior.state !== "deferred" && !(prior.state === "out_of_scope" && prior.goal_revision !== revision)) continue;
+          if (prior) this.db.query("DELETE FROM claims WHERE project = ? AND issue_number = ? AND state IN ('deferred', 'out_of_scope')").run(project, candidate.number);
           runId = randomUUID();
-          this.db.query("INSERT INTO claims (project, issue_number, state, run_id, pid, summary, updated_at) VALUES (?, ?, 'running', ?, ?, NULL, ?)").run(project, candidate.number, runId, process.pid, new Date().toISOString());
+          this.db.query("INSERT INTO claims (project, issue_number, state, run_id, pid, summary, updated_at, goal_revision) VALUES (?, ?, 'running', ?, ?, NULL, ?, ?)").run(project, candidate.number, runId, process.pid, new Date().toISOString(), Number.isSafeInteger(status.goal?.revision) ? status.goal.revision : null);
           return candidate;
         }
         return null;
       });
       issue = claimNext.immediate();
       if (!issue) return;
-      const payload = { run_id: runId, project, root: status.root, issue, contexts, context_command: ["bun", join(import.meta.dir, "cli.ts"), "context", "--repo", project, "--json"], instructions: "Act as manager only. Validate actionability and policy before work. Delegate execution and review to workers using gpt-6.1-terra. Report only evidence actually observed." };
+      const payload = { run_id: runId, project, root: status.root, issue, goal: status.goal ?? { objective: "", priorityIssues: [], revision: 0, updatedAt: null }, contexts, context_command: ["bun", join(import.meta.dir, "cli.ts"), "context", "--repo", project, "--json"], instructions: "Act as manager only. Validate actionability and policy before work. Delegate execution and review to workers using gpt-6.1-terra. Report only evidence actually observed." };
       let state = "needs attention";
       let summary = "Manager outcome was not recorded; inspect before retrying.";
       try {
@@ -131,7 +136,7 @@ export class ManagerLoop {
         } else if (exit !== 0) throw new Error(`Manager exited with status ${exit}; inspect the manager locally`);
         if (state !== "deferred") {
         const result = JSON.parse(stdout);
-        if (!result || typeof result !== "object" || Array.isArray(result) || Object.keys(result).sort().join(",") !== "outcome,summary" || !["complete", "blocked"].includes(result.outcome) || typeof result.summary !== "string" || !result.summary.trim()) throw new Error("Manager returned invalid outcome JSON");
+        if (!result || typeof result !== "object" || Array.isArray(result) || Object.keys(result).sort().join(",") !== "outcome,summary" || !["complete", "blocked", "out_of_scope"].includes(result.outcome) || (result.outcome === "out_of_scope" && !status.goal?.objective?.trim()) || typeof result.summary !== "string" || !result.summary.trim()) throw new Error("Manager returned invalid outcome JSON");
         state = result.outcome;
         summary = result.summary;
         }

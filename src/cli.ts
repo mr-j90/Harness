@@ -9,6 +9,8 @@ const help = `Usage: harness [--json] <command>
   repo attach <path>           Attach a repository
   repo list                    List attached repositories
   status --repo <name>         Show project status
+  goal show --repo <name>      Show the saved objective and priority order
+  goal set --repo <name> --objective <text> --priority <numbers> [--expected-revision <number>]
   goal pause|resume --repo <name>
   goal retry --repo <name> --issue <number>
   goal resolve --repo <name> --issue <number> --run <id> --outcome complete|blocked --summary <text>
@@ -19,7 +21,7 @@ Set HARNESS_STATE_DIR to override the state directory. Set HARNESS_RECONCILE=0
 before starting the service to disable periodic reconciliation (default 300s;
 HARNESS_RECONCILE_SECONDS overrides the interval).`;
 const args = process.argv.slice(2);
-const jsonIndex = args.indexOf('--json');
+const jsonIndex = ['goal-show', 'goal-set'].includes(args[0]) ? -1 : args.findIndex((arg, index) => arg === '--json' && args[index - 1] !== '--objective');
 const json = jsonIndex >= 0;
 if (json) args.splice(jsonIndex, 1);
 function output(value: any) {
@@ -32,13 +34,29 @@ function output(value: any) {
   console.log(JSON.stringify(value, null, 2));
 }
 function repo(): string {
-  const index = args.indexOf('--repo');
+  const index = args.includes('--repo') ? args.indexOf('--repo') : args.indexOf('--project');
   if (index < 0 || !args[index + 1]) throw new Error('Provide --repo <name>');
   return args[index + 1];
 }
 async function main() {
   if (!args.length || args.includes('--help') || args.includes('-h')) { console.log(help); return; }
   const [command, sub] = args;
+  if ((command === 'goal' && (sub === 'show' || sub === 'set')) || command === 'goal-show' || command === 'goal-set') {
+    const operation = command === 'goal' ? sub : command.slice(5);
+    if (operation === 'show') { const goal = await request({ command: 'goal-show', project: repo() }); if (json || command === 'goal-show') console.log(JSON.stringify(goal, null, 2)); else console.log(`Objective: ${goal.objective || '(none)'}\nPriority: ${goal.priorityIssues.length ? goal.priorityIssues.map((n: number) => `#${n}`).join(', ') : '(none)'}\nRevision: ${goal.revision}\nUpdated: ${goal.updatedAt || 'never'}`); return; }
+    const option = (name: string) => { const i = args.indexOf(name); if (i < 0 || args[i + 1] === undefined || (name !== '--objective' && args[i + 1].startsWith('--'))) throw new Error(`Provide ${name}`); return args[i + 1]; };
+    const objective = option('--objective');
+    let priorityIssues: unknown;
+    if (args.includes('--priority-issue-ids')) { try { priorityIssues = JSON.parse(option('--priority-issue-ids')); } catch { throw new Error('Provide a JSON array for --priority-issue-ids'); } }
+    else { const raw = option('--priority'); priorityIssues = raw === 'none' ? [] : raw.split(',').map(part => /^\d+$/.test(part) ? Number(part) : NaN); }
+    if (!Array.isArray(priorityIssues) || !priorityIssues.every(n => Number.isSafeInteger(n) && n > 0) || new Set(priorityIssues).size !== priorityIssues.length) throw new Error('Priority must contain unique positive issue numbers; use none for an empty list');
+    const revisionIndex = args.indexOf('--expected-revision');
+    const revisionText = revisionIndex < 0 ? undefined : option('--expected-revision');
+    const expectedRevision = revisionText === undefined ? undefined : Number(revisionText);
+    if (revisionText !== undefined && (!/^\d+$/.test(revisionText) || !Number.isSafeInteger(expectedRevision))) throw new Error('Expected revision must be a nonnegative integer');
+    const goal = await request({ command: 'goal-set', project: repo(), objective, priorityIssues, expectedRevision }, 120000);
+    if (json || command === 'goal-set') console.log(JSON.stringify(goal, null, 2)); else console.log(`Saved goal revision ${goal.revision}.\nObjective: ${goal.objective || '(none)'}\nPriority: ${goal.priorityIssues.length ? goal.priorityIssues.map((n: number) => `#${n}`).join(', ') : '(none)'}`); return;
+  }
   if (command === 'service' && sub === 'start') {
     try { const status = await request({ command: 'ping' }); output({ ...status, alreadyRunning: true }); return; }
     catch (e: any) { if (!['ENOENT', 'ECONNREFUSED'].includes(e.code)) throw e; }
@@ -67,4 +85,4 @@ async function main() {
   if (command === 'wake') { output(await request({ command: 'wake', project: repo() }, 120000)); return; }
   throw new Error('Unknown command or missing argument. Run harness --help.');
 }
-main().catch(e => { console.error(`harness: ${e.message}`); process.exitCode = 1; });
+main().catch(e => { if (json || args[0] === 'goal-show' || args[0] === 'goal-set') console.error(JSON.stringify({ error: e.message, ...(e.message === 'Goal revision conflict' ? { code: 'GOAL_REVISION_CONFLICT' } : {}) })); else console.error(`harness: ${e.message}`); process.exitCode = 1; });
