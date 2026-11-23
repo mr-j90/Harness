@@ -100,10 +100,18 @@ export async function runService() {
       const end = input.indexOf('\n');
       if (end < 0) return;
       const line = input.slice(0, end); input = '';
+      let req: Request;
+      try { req = JSON.parse(line); if (!req || typeof req.command !== 'string') throw new Error('Invalid request'); } catch { socket.end(JSON.stringify({ ok: false, error: 'Invalid request' }) + '\n'); return; }
+      const respond = (value: any) => socket.end(JSON.stringify({ ok: true, value }) + '\n');
+      if (req.command === 'shutdown') {
+        beginDrain();
+        respond({ draining: true, active: manager.activeCount() });
+        return;
+      }
+      if (req.command === 'ping') { respond({ running: true, pid: process.pid, stateDir, draining: stopping, active: manager.activeCount() }); return; }
       serialized(async () => {
-        const req: Request = JSON.parse(line);
+        if (stopping && !['projects', 'status', 'context'].includes(req.command)) throw new Error('Service is draining');
         switch (req.command) {
-          case 'ping': return { running: true, pid: process.pid, stateDir };
           case 'projects': return engine.projects();
           case 'attach': if (!req.root) throw new Error('Repository path is required'); { const attached = engine.attach(req.root); if (attached.enabled) schedule(attached.project); return status(attached.project); }
           case 'status': if (!req.project) throw new Error('Repository is required'); return status(req.project);
@@ -116,7 +124,7 @@ export async function runService() {
           case 'stop': if (manager.activeCount()) throw new Error('A manager run is active; wait for it to finish before stopping the service'); stopping = true; return { stopping: true };
           default: throw new Error('Unknown command');
         }
-      }).then(value => { socket.end(JSON.stringify({ ok: true, value }) + '\n'); if (stopping) shutdown(); }, e => socket.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }) + '\n'));
+      }).then(value => { respond(value); if (req.command === 'stop') beginDrain(); }, e => socket.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }) + '\n'));
     });
     socket.on('error', () => {});
   });
@@ -142,18 +150,26 @@ export async function runService() {
   };
   let socketIdentity: { dev: number; ino: number } | undefined;
   let shuttingDown = false;
-  const shutdown = () => {
+  const beginDrain = () => {
     if (shuttingDown) return;
     shuttingDown = true;
     stopping = true;
     if (timer) clearInterval(timer);
     if (slackTimer) clearInterval(slackTimer);
-    server.close(() => { void queue.then(async () => { while (manager.activeCount() || slackPolling) await Bun.sleep(100); manager.close(); notices.close(); engine.close(); try { const current = lstatSync(socketPath); if (socketIdentity && current.dev === socketIdentity.dev && current.ino === socketIdentity.ino) unlinkSync(socketPath); } catch {} process.exit(0); }); });
+    void (async () => {
+      await queue;
+      while (manager.activeCount() || slackPolling) await Bun.sleep(100);
+      server.close(() => {
+        manager.close(); notices.close(); engine.close();
+        try { const current = lstatSync(socketPath); if (socketIdentity && current.dev === socketIdentity.dev && current.ino === socketIdentity.ino) unlinkSync(socketPath); } catch {}
+        process.exit(0);
+      });
+    })();
   };
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(socketPath, () => { chmodSync(socketPath, 0o600); const stat = lstatSync(socketPath); socketIdentity = { dev: stat.dev, ino: stat.ino }; resolve(); }); });
   const slackSeconds = config.slackInterval;
   if (Number.isFinite(slackSeconds) && slackSeconds > 0) { pollSlack(); slackTimer = setInterval(pollSlack, slackSeconds * 1000); }
-  process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);
+  process.on('SIGTERM', beginDrain); process.on('SIGINT', beginDrain);
   // Reconcile once after startup and coalesce overlapping periodic ticks.
   for (const project of engine.projects()) if (project.enabled) schedule(project.project);
   const seconds = config.githubInterval;

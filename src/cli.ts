@@ -5,7 +5,7 @@ import { request, stateDir } from './service';
 
 const help = `Usage: harness [--json] <command>
 
-  service start|stop|status    Manage the local service
+  service start|stop|shutdown|status  Manage the local service
   repo attach <path>           Attach a repository
   repo list                    List attached repositories
   status --repo <name>         Show project status
@@ -26,7 +26,8 @@ function output(value: any) {
   if (json) { console.log(JSON.stringify(value, null, 2)); return; }
   if (Array.isArray(value)) { console.log(value.length ? value.map(item => `${item.project}: ${item.state}`).join('\n') : 'No repositories attached.'); return; }
   if (value.project) { console.log(`${value.project}: ${value.state}\nManager configured: ${value.manager_configured ? 'yes' : 'no'}${value.jobs?.length ? `\nJobs: ${value.jobs.map((j: any) => `#${j.issue_number} ${j.state}`).join(', ')}` : ''}${value.last_error ? `\nError: ${value.last_error}` : ''}${value.slack_last_error ? `\nSlack: ${value.slack_last_error}` : ''}`); return; }
-  if (typeof value.running === 'boolean') { console.log(value.running ? `Service running (PID ${value.pid}).` : 'Service stopped.'); return; }
+  if (typeof value.running === 'boolean') { console.log(value.running ? `Service ${value.draining ? `draining (${value.active} active)` : 'running'} (PID ${value.pid}).` : 'Service stopped.'); return; }
+  if (value.draining) { console.log(`Service draining (${value.active} active).`); return; }
   if (value.stopping) { console.log('Service stopping.'); return; }
   console.log(JSON.stringify(value, null, 2));
 }
@@ -50,6 +51,7 @@ async function main() {
     try { output(await request({ command: 'ping' })); } catch (e: any) { if (['ENOENT', 'ECONNREFUSED'].includes(e.code)) { output({ running: false, stateDir }); return; } throw e; }
     return;
   }
+  if (command === 'service' && sub === 'shutdown') { output(await request({ command: 'shutdown' })); return; }
   if (command === 'service' && sub === 'stop') { output(await request({ command: 'stop' })); return; }
   if (command === 'repo' && sub === 'attach' && args[2]) { output(await request({ command: 'attach', root: resolve(args[2]) })); return; }
   if (command === 'repo' && sub === 'list') { output(await request({ command: 'projects' })); return; }

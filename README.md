@@ -36,6 +36,7 @@ bun src/cli.ts goal pause --repo example-org/billing
 bun src/cli.ts goal resume --repo example-org/billing
 bun src/cli.ts service status
 bun src/cli.ts service stop
+bun src/cli.ts service shutdown
 ```
 
 `service start` launches a detached local process. Add `--json` to commands for JSON output. Reattach a checkout after changing its configuration. Use the GitHub `owner/repository`, checkout path, or an unambiguous directory name as the project identifier.
@@ -81,9 +82,9 @@ A preflight failure before sending, including missing settings or a busy or mism
    ```
 
     If it is already attached, starting the service itself can dispatch after reconciliation. Use `bun src/cli.ts status --repo eliza-hq/finance_mesh` to inspect claims.
-4. To stop new work, run `bun src/cli.ts goal pause --repo eliza-hq/finance_mesh`. Pause does not interrupt an active run. Stop the service once active runs finish with `bun src/cli.ts service stop`.
+4. To stop new work, run `bun src/cli.ts goal pause --repo eliza-hq/finance_mesh`. Pause does not interrupt an active run. Run `bun src/cli.ts service shutdown` to stop scheduling immediately and exit after active runs finish. Alternatively, `service stop` refuses while a run is active.
 
-Claims persist per issue, with at most one running handoff per project. After a terminal outcome the service performs a fresh GitHub reconciliation and considers the next unclaimed candidate in issue-number order, subject to the enabled goal, allowlist and URL checks; the manager must still assess dependencies and actionability. A `blocked` claim can be released with `bun src/cli.ts goal retry --repo example-org/billing --issue 123`. A `needs attention` claim blocks all further handoffs until an operator inspects it and records an outcome for the exact run, for example `bun src/cli.ts goal resolve --repo example-org/billing --issue 123 --run RUN_ID --outcome blocked --summary "Inspection result"`. Status shows claims and run IDs. `service stop` refuses while a manager is active; SIGTERM waits for active handoffs. Forced interruption can leave an uncertain claim.
+Claims persist per issue, with at most one running handoff per project. After a terminal outcome the service performs a fresh GitHub reconciliation and considers the next unclaimed candidate in issue-number order, subject to the enabled goal, allowlist and URL checks; the manager must still assess dependencies and actionability. A `blocked` claim can be released with `bun src/cli.ts goal retry --repo example-org/billing --issue 123`. A `needs attention` claim blocks all further handoffs until an operator inspects it and records an outcome for the exact run, for example `bun src/cli.ts goal resolve --repo example-org/billing --issue 123 --run RUN_ID --outcome blocked --summary "Inspection result"`. Status shows claims and run IDs. `service shutdown` acknowledges immediately and drains active handoffs; service status reports draining until exit. `service stop` refuses while a manager is active; SIGTERM also waits for active handoffs. Forced interruption can leave an uncertain claim.
 
 Run `bash scripts/smoke-t3.sh` from this directory for the local fake-T3 and fake-GitHub smoke test; it does not dispatch live work.
 
