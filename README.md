@@ -93,3 +93,16 @@ Run `bash scripts/smoke-t3.sh` from this directory for the local fake-T3 and fak
 Before service start, set `HARNESS_SLACK_PROJECT` to the attached `owner/repository`, `HARNESS_SLACK_CHANNEL` to its Slack channel ID, `HARNESS_SLACK_BOT_ID` to the app's own bot ID, and `HARNESS_SLACK_TOKEN` to an appropriately scoped token. All four are required. An independent heartbeat polls the mapped channel every 30 seconds by default; `HARNESS_SLACK_INTERVAL_SECONDS` overrides this interval. Fresh accepted messages trigger reconciliation. The service stores accepted messages and its cursor atomically. The first poll starts at activation time rather than reading channel history. It filters bot messages, including its own, and passes the latest 50 persisted messages to the manager as context. Messages remain in the local state directory; use `bun src/cli.ts context --repo example-org/billing --json` to inspect them. Slack signals do not authorize work or replace GitHub issue discovery. This prototype reads top-level channel history only, not thread replies; access and rate limits depend on the app and workspace. Do not put tokens in repository files.
 
 The service posts job outcomes and idle or blocked transitions with persisted delivery keys: confirmed failures can be retried on a subsequent call, while an ambiguous delivery is retained as unknown and is not automatically resent. Slack's [history](https://docs.slack.dev/reference/methods/conversations.history/) and [message posting](https://docs.slack.dev/reference/methods/chat.postMessage/) documentation describes API permissions and behavior.
+
+## Local dashboard
+
+The dashboard is a separate, read-only local Next.js application. It does not start or control the harness service. Install its dependencies and run it from the repository root:
+
+```sh
+npm --prefix dashboard ci
+npm run dashboard:dev
+```
+
+Open <http://127.0.0.1:3000>. For a production build, run `npm run dashboard:build` followed by `npm run dashboard:start`. Both commands bind to loopback by default. The dashboard reads local harness state and refreshes from `/api/snapshot`; availability depends on the local state and any configured integrations.
+
+The dashboard inherits `HARNESS_STATE_DIR` and `HARNESS_CONFIG` for the harness CLI. It uses `~/.t3/bin/t3` by default; set `HARNESS_T3_BIN` to an absolute path to override it. Restart the dashboard after changing its environment.
