@@ -1,0 +1,41 @@
+# Illustrative design example only; no existing harness consumes this schema.
+# Heartbeat and service settings belong outside this repository profile.
+[repository]
+github = "eliza-hq/finance_mesh"
+default_branch = "main"
+instructions_if_present = "AGENTS.md"
+
+[tracking]
+canonical = "github_issues"
+policy = "docs/agents/issue-tracker.md"
+status_dimensions = ["source", "merged", "deployed", "live_validated", "finance"]
+
+[reporting]
+channel_name = "ib-dev-agents"
+# Resolve and verify the destination at runtime; no ID is embedded here.
+policy = ".agents/skills/posting-updates/SKILL.md"
+# Newer main delegates to docs/agents/authority.md; follow the pinned revision,
+# including precedence for staging-outcome threads.
+coordination_policy = "AGENTS.md"
+
+[local_check_selection]
+# Replace each placeholder with a verified committed revision before execution.
+argv = ["node", "scripts/dev/ci-local.mjs", "--base", "{base}", "--head", "{head}", "--list"]
+output = "selection_only"
+limitations = "Local selection is not execution or proof of hosted CI, merge queue, deployment, live validation, or Finance acceptance. PR CI selects the tested merge against its event base."
+policy = "docs/operations/application-cd/affected-ci.md"
+
+# Proposed standing goal; replace the placeholder with verified GitHub logins.
+# An empty list disables dispatch until explicitly configured.
+[standing_goal]
+enabled = true
+github_assignee_allowlist = [] # Example after verification: ["verified-github-login"]
+triggers = ["allowed_slack_signal", "worker_done", "worker_blocked", "periodic_github_reconcile", "service_restart"]
+slack_signal_policy = "Only signals allowed by the configured reporting and coordination policies trigger a refresh."
+selection_order = ["eligible_open_assigned_issues", "repository_priority", "oldest_created", "issue_number"]
+eligibility = "Actionable; assigned to an allowlisted login; dependencies satisfied; exclude active, completed and duplicate jobs."
+brief_updates = "Refresh relevant new information and incorporate it into the current brief."
+completion = "Reconcile and select the next eligible issue without another /goal command."
+notice_transitions = ["idle", "blocked"]
+idle = "No remaining work."
+blocked = "Work remains but none can advance; continue other eligible issues."

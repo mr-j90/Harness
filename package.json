@@ -1,0 +1,8 @@
+{
+  "name": "portable-harness-v1",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": { "harness": "./src/cli.ts" },
+  "scripts": { "harness": "bun src/cli.ts" }
+}

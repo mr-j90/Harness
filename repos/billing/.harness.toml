@@ -1,0 +1,7 @@
+# Replace these illustrative values before attaching this checkout.
+[repository]
+github = "example-org/billing"
+
+[standing_goal]
+enabled = true
+github_assignee_allowlist = ["example-login"]

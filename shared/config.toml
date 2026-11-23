@@ -1,0 +1,11 @@
+# Copy to ~/.config/portable-harness/config.toml, or set HARNESS_CONFIG to its path.
+[models]
+worker = "gpt-6.1-terra"
+reviewer = "gpt-6.1-terra"
+
+[state]
+directory = "~/.local/state/portable-harness"
+
+[standing_goal]
+slack_poll_interval_seconds = 30
+github_reconcile_interval_seconds = 300
